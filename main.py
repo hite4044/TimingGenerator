@@ -1,5 +1,7 @@
 import subprocess
 import sys
+from os import makedirs
+from os.path import split
 from pathlib import Path
 
 import cv2
@@ -282,7 +284,7 @@ class FastTimerVideoGenerator:
             '-f', 'rawvideo',
             '-vcodec', 'rawvideo',
             '-s', f'{self.width}x{self.height}',
-            '-pix_fmt', 'gray',  # OpenCV使用BGR格式
+            '-pix_fmt', 'gray',  # 使用灰度格式
             '-r', str(self.fps),
             '-i', '-',  # 从标准输入读取
             '-c:v', self.encoder,
@@ -390,7 +392,7 @@ def main():
 
     parser = argparse.ArgumentParser(description='生成正计时视频')
     parser.add_argument('font_path', help='字体文件路径', default='MapleMono-NF-CN-Bold.ttf')
-    parser.add_argument('-o', '--output', default='timer_output.mkv',
+    parser.add_argument('-o', '--output', default='output\\timer_output.mkv',
                         help='输出视频路径')
 
     # 计时器相关
@@ -456,6 +458,7 @@ def main():
             encoder = "libx265"
 
     # 创建生成器
+    makedirs(split(args.output)[0])
     generator = FastTimerVideoGenerator(args.font_path, args.output,
                                         args.offset, args.duration, args.acceleration, args.format,
                                         args.fps, encoder, args.crf, args.bitrate, args.width, args.height,
