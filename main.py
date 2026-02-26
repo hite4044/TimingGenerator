@@ -19,7 +19,7 @@ class FastTimerVideoGenerator:
 
     def __init__(self, font_path, output_path="output.mkv",
                  width: int = 1920, height: int = 1080, fps: int = 30, encoder="libx265",
-                 total_seconds: int = 80 * 60 * 60, acceleration: int = 120, fmt: str = "hms"):
+                 total_seconds: int = 80 * 60 * 60, acceleration: int = 120, fmt: str = "hms", start_offset: int = 0):
         """
         初始化视频生成器
 
@@ -38,6 +38,7 @@ class FastTimerVideoGenerator:
         self.format, self.format_tmp = self.FORMATS[fmt]
 
         # 时间参数
+        self.start_offset = start_offset
         self.acceleration = acceleration  # 加速倍率
         self.total_seconds = total_seconds  # 计时器总时长
         self.video_seconds = self.total_seconds / self.acceleration  # 视频时长
@@ -255,8 +256,7 @@ class FastTimerVideoGenerator:
             '-pix_fmt', 'bgr24',  # OpenCV使用BGR格式
             '-r', str(self.fps),
             '-i', '-',  # 从标准输入读取
-            '-c:v', 'hevc_nvenc',
-            '-preset', 'p3',  # 最快的编码预设
+            '-c:v', self.encoder,
             '-crf', '18',  # 高质量
             '-pix_fmt', 'yuv420p',
             str(self.output_path)
@@ -274,7 +274,7 @@ class FastTimerVideoGenerator:
             for frame_idx in tqdm(range(self.total_frames), desc="生成视频"):
                 # 计算当前时间
                 video_time = frame_idx / self.fps
-                real_time = video_time * self.acceleration
+                real_time = video_time * self.acceleration + self.start_offset
 
                 # 格式化时间
                 time_str = self.format_time(real_time)
@@ -323,7 +323,7 @@ class FastTimerVideoGenerator:
             for frame_idx in tqdm(range(self.total_frames), desc="生成视频"):
                 # 计算当前时间
                 video_time = frame_idx / self.fps
-                real_time = video_time * self.acceleration
+                real_time = video_time * self.acceleration + self.start_offset
 
                 # 格式化时间
                 time_str = self.format_time(real_time)
@@ -364,6 +364,8 @@ def main():
     parser.add_argument('font_path', help='字体文件路径', default='MapleMono-NF-CN-Bold.ttf')
     parser.add_argument('-o', '--output', default='timer_output.mkv',
                         help='输出视频路径')
+    parser.add_argument('-off', '--offset', type=int, default=0,
+                        help='计时器起始偏移 (秒) (默认: 0)')
     parser.add_argument('-d', '--duration', type=int, default=80 * 60 * 60,
                         help='计时器时长 (秒) (默认: 80小时)')
     parser.add_argument('-a', "--acceleration", type=int, default=120,
@@ -393,7 +395,7 @@ def main():
     # 创建生成器
     generator = FastTimerVideoGenerator(args.font_path, args.output,
                                         args.width, args.height, args.fps, args.encoder,
-                                        args.duration, args.acceleration, args.format)
+                                        args.duration, args.acceleration, args.format, args.offset)
 
     # 如果不使用Numba，替换渲染函数
     if args.no_numba:
