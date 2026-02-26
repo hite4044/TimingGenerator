@@ -8,6 +8,8 @@ import numba
 import numpy as np
 from tqdm import tqdm
 
+from sys_info import get_gpu_info
+
 
 class FastTimerVideoGenerator:
     FORMATS = {
@@ -18,34 +20,34 @@ class FastTimerVideoGenerator:
     }
 
     def __init__(self, font_path, output_path="output.mkv",
-                 width: int = 1920, height: int = 1080, fps: int = 30, encoder="libx265",
-                 total_seconds: int = 80 * 60 * 60, acceleration: int = 120, fmt: str = "hms", start_offset: int = 0):
+                 start_offset: int = 0, total_seconds: int = 80 * 60 * 60, acceleration: int = 120, fmt: str = "hms",
+                 fps: int = 30, encoder="libx265", crf: int = 18, bitrate: int = 2000, width: int = 1920,
+                 height: int = 1080,
+                 use_numpy: bool = True, no_numba: bool = False):
         """
         初始化视频生成器
-
-        参数:
-            font_path: 字体文件路径
-            output_path: 输出视频路径
         """
         self.font_path = Path(font_path)
         self.output_path = Path(output_path)
 
-        # 视频参数
-        self.width = width
-        self.height = height
-        self.fps = fps
-        self.encoder = encoder
-        self.format, self.format_tmp = self.FORMATS[fmt]
-
-        # 时间参数
-        self.start_offset = start_offset
+        # 计时器参数
+        self.start_offset = start_offset  # 起始偏移
         self.acceleration = acceleration  # 加速倍率
         self.total_seconds = total_seconds  # 计时器总时长
+        self.format, self.format_tmp = self.FORMATS[fmt]  # 格式
         self.video_seconds = self.total_seconds / self.acceleration  # 视频时长
-        self.total_frames = int(self.video_seconds * self.fps)  # 视频总帧数
+        self.total_frames = int(self.video_seconds * fps)  # 视频总帧数
+
+        # 视频参数
+        self.fps = fps
+        self.crf = crf
+        self.bitrate = bitrate
+        self.encoder = encoder
+        self.width = width
+        self.height = height
 
         # 预分配内存
-        self.buffer_template = np.zeros((self.height, self.width, 3), dtype=np.uint8)  # 背景模板
+        self.buffer_template = np.zeros((self.height, self.width), dtype=np.uint8)  # 背景模板
         self.frame_buffer = self.buffer_template.copy()  # 用于写入的帧缓冲区
 
         # 初始化字体
@@ -60,6 +62,15 @@ class FastTimerVideoGenerator:
 
         # 创建字形缓存
         self.char_cache = {}
+        if use_numpy:  # Numpy数组操作
+            self.text_render_func = self.render_char_to_buffer_numpy
+        else:
+            if no_numba:  # Python原生方法
+                self.text_render_func = self.render_char_to_buffer_raw
+            else:  # Numba加速
+                self.text_render_func = self.render_char_to_buffer
+
+        self.pre_render_chars()
 
     def init_font(self):
         """初始化字体并自动计算合适的大小"""
@@ -85,6 +96,11 @@ class FastTimerVideoGenerator:
 
         self.face.set_char_size(self.font_size * 64)
 
+    def pre_render_chars(self):
+        """预渲染所有字符"""
+        for char in "0123456789:.":
+            self.get_char_bitmap(char)
+
     def calc_text_bbox_for_size(self, text):
         """计算文本边界框"""
         width = 0
@@ -92,7 +108,7 @@ class FastTimerVideoGenerator:
         max_descent = 0
 
         for char in text:
-            self.face.load_char(char, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_NO_BITMAP)
+            self.face.load_char(char, getattr(freetype, "FT_LOAD_RENDER") | getattr(freetype, "FT_LOAD_TARGET_MONO"))
             glyph = self.face.glyph
             width += glyph.advance.x >> 6
 
@@ -140,7 +156,7 @@ class FastTimerVideoGenerator:
     def get_char_bitmap(self, char):
         """获取字符位图（带缓存）"""
         if char not in self.char_cache:
-            self.face.load_char(char, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_MONO)
+            self.face.load_char(char, getattr(freetype, "FT_LOAD_RENDER") | getattr(freetype, "FT_LOAD_TARGET_MONO"))
             glyph = self.face.glyph
             bitmap = glyph.bitmap
 
@@ -159,48 +175,61 @@ class FastTimerVideoGenerator:
 
     @staticmethod
     @numba.njit(cache=True)
-    def render_to_buffer_fast(frame_buffer: np.ndarray, bitmap: np.ndarray,
-                              y_start, y_end, x_start, x_end,
+    def render_char_to_buffer(frame_buffer: np.ndarray, char_bitmap: np.ndarray,
+                              y_start, _, x_start, __,
                               by1, by2, bx1, bx2):
-        """使用Numba加速渲染到缓冲区"""
+        """以指定的位置绘制字符位图, Numba加速版本"""
         for i in range(by1, by2):
             for j in range(bx1, bx2):
-                if bitmap[i, j] > 0:
-                    k = bitmap[i, j]
+                k = char_bitmap[i, j]
+                if k > 0:
                     # 设置BGR三个通道为白色
                     y = y_start + (i - by1)
                     x = x_start + (j - bx1)
-                    frame_buffer[y, x, 0] = k
-                    frame_buffer[y, x, 1] = k
-                    frame_buffer[y, x, 2] = k
+                    frame_buffer[y, x] = k
 
     @staticmethod
-    def render_to_buffer_fast_numpy(frame_buffer: np.ndarray, bitmap: np.ndarray,
+    def render_char_to_buffer_raw(frame_buffer: np.ndarray, char_bitmap: np.ndarray,
+                                  y_start, _, x_start, __,
+                                  by1, by2, bx1, bx2):
+        """
+        以指定的位置绘制字符位图
+        bro逗我雷霆呢, 你用这玩意
+        """
+        for i in range(by1, by2):
+            for j in range(bx1, bx2):
+                k = char_bitmap[i, j]
+                if k > 0:
+                    y = y_start + (i - by1)
+                    x = x_start + (j - bx1)
+                    frame_buffer[y, x] = k
+
+    @staticmethod
+    def render_char_to_buffer_numpy(frame_buffer: np.ndarray, char_bitmap: np.ndarray,
                                     y_start, y_end, x_start, x_end,
                                     by1, by2, bx1, bx2):
-        """使用numpy进行字符绘制"""
-        # 提取有效区域
-        valid_bitmap = bitmap[by1:by2, bx1:bx2]
+        """以指定的位置绘制字符位图, numpy实现版本"""
 
-        # 确保目标区域不越界
-        y_len = min(y_end - y_start, valid_bitmap.shape[0])
-        x_len = min(x_end - x_start, valid_bitmap.shape[1])
+        # 提取字符位图的有效部分
+        char_region = char_bitmap[by1:by2, bx1:bx2]
 
-        # 向量化复制
-        frame_buffer[y_start:y_start + y_len, x_start:x_start + x_len, :] = \
-            np.stack([valid_bitmap[:y_len, :x_len]] * 3, axis=-1)
+        # 创建一个掩码，标记需要绘制的像素（非零值）
+        mask = char_region > 0
+
+        # 将字符位图的像素值复制到帧缓冲区的目标区域
+        frame_buffer[y_start:y_end, x_start:x_end][mask] = char_region[mask]
 
     def format_time(self, total_seconds: float):
-        """格式化时间为HH:MM:SS 或者 HH:MM:SS.MS"""
+        """以指定的格式格式化时间"""
         hours = int(total_seconds // 3600)
         minutes = int((total_seconds % 3600) // 60)
         seconds = int(total_seconds % 60)
         milliseconds = int((total_seconds % 1) * 100)
         return self.format.format(h=hours, m=minutes, s=seconds, ms=milliseconds)
 
-    def render_text_fast(self, text):
-        """快速渲染文本到预分配缓冲区"""
-        # 清空文字区域
+    def render_text_to_buffer(self, text: str):
+        """渲染文本到预分配缓冲区"""
+        # 准备黑色背景
         self.frame_buffer = self.buffer_template.copy()
 
         x_offset = 0
@@ -235,8 +264,8 @@ class FastTimerVideoGenerator:
                     bx1 = x1 - x_start
                     bx2 = bx1 + (x2 - x1)
 
-                    # 使用Numba加速渲染
-                    self.render_to_buffer_fast(
+                    # 渲染计时器文本
+                    self.text_render_func(
                         self.frame_buffer, bitmap,
                         y1, y2, x1, x2,
                         by1, by2, bx1, bx2
@@ -253,11 +282,12 @@ class FastTimerVideoGenerator:
             '-f', 'rawvideo',
             '-vcodec', 'rawvideo',
             '-s', f'{self.width}x{self.height}',
-            '-pix_fmt', 'bgr24',  # OpenCV使用BGR格式
+            '-pix_fmt', 'gray',  # OpenCV使用BGR格式
             '-r', str(self.fps),
             '-i', '-',  # 从标准输入读取
             '-c:v', self.encoder,
-            '-crf', '18',  # 高质量
+            '-b:v', str(self.bitrate) + 'k',
+            '-crf', str(self.crf),
             '-pix_fmt', 'yuv420p',
             str(self.output_path)
         ]
@@ -266,9 +296,10 @@ class FastTimerVideoGenerator:
         print(f"实际时间: {self.total_seconds}秒, 加速: {self.acceleration}倍")
 
         # 启动FFmpeg进程
-        proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE,
+        proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, bufsize=1024 * 1024,
                                 stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
 
+        last_text: str = ""
         try:
             # 生成每一帧
             for frame_idx in tqdm(range(self.total_frames), desc="生成视频"):
@@ -279,11 +310,13 @@ class FastTimerVideoGenerator:
                 # 格式化时间
                 time_str = self.format_time(real_time)
 
-                # 渲染文字
-                self.render_text_fast(time_str)
+                if time_str != last_text:  # 重复使用相同帧
+                    # 渲染文字
+                    self.render_text_to_buffer(time_str)
+                    last_text = time_str
 
                 # 写入帧到FFmpeg
-                proc.stdin.write(self.frame_buffer.tobytes())
+                proc.stdin.write(self.frame_buffer.data)
 
             proc.stdin.close()
             proc.wait()
@@ -298,7 +331,7 @@ class FastTimerVideoGenerator:
     def generate_video_opencv(self):
         """使用OpenCV生成视频（备用方案）"""
         # 创建视频写入器
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = getattr(cv2, "VideoWriter_fourcc")(*'mp4v')
         out = cv2.VideoWriter(
             str(self.output_path),
             fourcc,
@@ -307,14 +340,9 @@ class FastTimerVideoGenerator:
         )
 
         if not out.isOpened():
-            print("警告: 无法使用HEVC编码，尝试使用H.264")
-            fourcc = cv2.VideoWriter_fourcc(*'avc1')
-            out = cv2.VideoWriter(
-                str(self.output_path),
-                fourcc,
-                self.fps,
-                (self.width, self.height)
-            )
+            print("mp4v编码器打开失败, 退出程序")
+            out.release()
+            raise
 
         print(f"生成视频: {self.total_frames}帧 ({self.video_seconds:.1f}秒)")
         print(f"实际时间: {self.total_seconds}秒, 加速: {self.acceleration}倍")
@@ -329,7 +357,7 @@ class FastTimerVideoGenerator:
                 time_str = self.format_time(real_time)
 
                 # 渲染文字
-                self.render_text_fast(time_str)
+                self.render_text_to_buffer(time_str)
 
                 # 写入帧
                 out.write(self.frame_buffer)
@@ -364,26 +392,42 @@ def main():
     parser.add_argument('font_path', help='字体文件路径', default='MapleMono-NF-CN-Bold.ttf')
     parser.add_argument('-o', '--output', default='timer_output.mkv',
                         help='输出视频路径')
-    parser.add_argument('-off', '--offset', type=int, default=0,
-                        help='计时器起始偏移 (秒) (默认: 0)')
-    parser.add_argument('-d', '--duration', type=int, default=80 * 60 * 60,
-                        help='计时器时长 (秒) (默认: 80小时)')
-    parser.add_argument('-a', "--acceleration", type=int, default=120,
-                        help='加速倍数 (默认: 120)')
-    parser.add_argument('-fps', type=int, default=30,
-                        help='帧率 (默认: 30)')
-    parser.add_argument('-enc', "--encoder", type=str, default="libx265",
-                        help='编码器 (默认: libx265) (N卡用: hevc_nvenc) (A卡用：hevc_amf) (Intel用: hevc_qsv)')
-    parser.add_argument('--width', type=int, default=1920,
-                        help='视频宽度 (默认: 1920)')
-    parser.add_argument('--height', type=int, default=1080,
-                        help='视频高度 (默认: 1080)')
-    parser.add_argument('-f', "--format", type=str, default="hms",
-                        help='支持hms(00:00:00), hms.ms(00:00:00.00), ms(00:00), ms.ms(00:00.00)')
-    parser.add_argument('--no-ffmpeg', action='store_true',
-                        help='不使用FFmpeg（使用OpenCV）')
-    parser.add_argument('--no-numba', action='store_true',
-                        help='不使用Numba加速')
+
+    # 计时器相关
+    group = parser.add_argument_group("计时器设置")
+    group.add_argument('-off', '--offset', type=int, default=0,
+                       help='计时器起始偏移 (秒) (默认: 0)')
+    group.add_argument('-d', '--duration', type=int, default=80 * 60 * 60,
+                       help='计时器时长 (秒) (默认: 80小时)')
+    group.add_argument('-a', "--acceleration", type=int, default=120,
+                       help='加速倍数 (默认: 120)')
+    group.add_argument('-f', "--format", type=str, default="hms",
+                       help='支持hms(00:00:00), hms.ms(00:00:00.00), ms(00:00), ms.ms(00:00.00)')
+
+    # 视频相关
+    group = parser.add_argument_group("视频设置")
+    group.add_argument('-fps', type=int, default=30,
+                       help='帧率 (默认: 30)')
+    group.add_argument('-enc', "--encoder", type=str, default="%AUTO%",
+                       help='编码器 (默认: 自动根据显卡决定) (N卡用: hevc_nvenc) (A卡用：hevc_amf) (Intel用: hevc_qsv)')
+    group.add_argument('-crf', type=int, default=18,
+                       help='编码器使用的质量值(越低质量越好) (默认: 18)')
+    group.add_argument('-b', "--bitrate", type=int, default=2000,
+                       help='编码器使用的码率 (kbps) (默认: 2000)')
+    group.add_argument('--width', type=int, default=1920,
+                       help='视频宽度 (默认: 1920)')
+    group.add_argument('--height', type=int, default=1080,
+                       help='视频高度 (默认: 1080)')
+
+    # 杂项
+    group = parser.add_argument_group("其他")
+    group.add_argument('--no-ffmpeg', action='store_true',
+                       help='不使用FFmpeg进行视频编码 (使用OpenCV), -crf -enc 将不可用')
+    group.add_argument('--no-numpy', action='store_true',
+                       help='字符位图绘制不使用Numpy进行加速, 而使用numba加速的逐像素更改')
+
+    group.add_argument('--no-numba', action='store_true',
+                       help='字符位图绘制使用python原生遍历算法, 性能极低, 非必要不要启用')
 
     args = parser.parse_args()
 
@@ -392,64 +436,30 @@ def main():
         print(f"错误: 字体文件 '{args.font_path}' 不存在")
         sys.exit(1)
 
+    # 自动决策编码器
+    encoder = args.encoder
+    if encoder == "%AUTO%":
+        gpus = get_gpu_info()
+        print("检测到的可用GPU:", gpus)
+        info_text = " ".join(gpus).lower()
+        if "nvidia" in info_text:
+            print("自动选择编码器: NVIDIA NVENC")
+            encoder = "hevc_nvenc"
+        elif "amd" in info_text:
+            print("自动选择编码器: AMD AMF")
+            encoder = "hevc_amf"
+        elif "intel" in info_text:
+            print("自动选择编码器: Intel Quick Sync Video")
+            encoder = "hevc_qsv"
+        else:
+            print("无法决定最优编码器, 使用libx265")
+            encoder = "libx265"
+
     # 创建生成器
     generator = FastTimerVideoGenerator(args.font_path, args.output,
-                                        args.width, args.height, args.fps, args.encoder,
-                                        args.duration, args.acceleration, args.format, args.offset)
-
-    # 如果不使用Numba，替换渲染函数
-    if args.no_numba:
-        # 使用纯Python渲染函数
-        def render_text_simple(self, text):
-            """简单的渲染文本函数，不使用Numba"""
-            # 清空文字区域
-            self.frame_buffer = self.buffer_template.copy()
-
-            x_offset = 0
-
-            for char in text:
-                char_data = self.get_char_bitmap(char)
-                bitmap = char_data['image']
-                left = char_data['left']
-                top = char_data['top']
-
-                if bitmap.size > 0:
-                    h, w = bitmap.shape
-
-                    # 计算目标位置
-                    y_start = self.text_y - top
-                    y_end = y_start + h
-                    x_start = self.text_x + x_offset + left
-                    x_end = x_start + w
-
-                    # 确保不越界
-                    if (y_start < self.height and y_end > 0 and
-                            x_start < self.width and x_end > 0):
-
-                        # 计算裁剪边界
-                        y1 = max(0, y_start)
-                        y2 = min(self.height, y_end)
-                        x1 = max(0, x_start)
-                        x2 = min(self.width, x_end)
-
-                        # 计算位图裁剪
-                        by1 = y1 - y_start
-                        by2 = by1 + (y2 - y1)
-                        bx1 = x1 - x_start
-                        bx2 = bx1 + (x2 - x1)
-
-                        # 直接渲染
-                        for i in range(by1, by2):
-                            for j in range(bx1, bx2):
-                                if bitmap[i, j] > 0:
-                                    y = y1 + (i - by1)
-                                    x = x1 + (j - bx1)
-                                    self.frame_buffer[y, x] = [255, 255, 255]
-
-                x_offset += char_data['advance']
-
-        # 替换渲染函数
-        generator.render_text_fast = lambda text: render_text_simple(generator, text)
+                                        args.offset, args.duration, args.acceleration, args.format,
+                                        args.fps, encoder, args.crf, args.bitrate, args.width, args.height,
+                                        not args.no_numpy, args.no_numba)
 
     # 生成视频
     try:
