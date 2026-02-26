@@ -1,7 +1,5 @@
 import subprocess
 import sys
-from os import makedirs
-from os.path import split
 from pathlib import Path
 
 import cv2
@@ -22,9 +20,12 @@ class FastTimerVideoGenerator:
     }
 
     def __init__(self, font_path, output_path="output.mkv",
-                 start_offset: int = 0, total_seconds: int = 80 * 60 * 60, acceleration: int = 120, fmt: str = "hms",
-                 fps: int = 30, encoder="libx265", crf: int = 18, bitrate: int = 2000, width: int = 1920,
-                 height: int = 1080,
+                 start_offset: float = 0, total_seconds: float = 80 * 60 * 60, acceleration: float = 120,
+                 fmt: str = "hms", fg: int = 255, bg: int = 0,
+
+                 fps: int = 30, encoder="libx265", crf: int = 18, preset: str = None, bitrate: int = 2000,
+                 width: int = 1920, height: int = 1080,
+
                  use_numpy: bool = True, no_numba: bool = False):
         """
         初始化视频生成器
@@ -39,17 +40,22 @@ class FastTimerVideoGenerator:
         self.format, self.format_tmp = self.FORMATS[fmt]  # 格式
         self.video_seconds = self.total_seconds / self.acceleration  # 视频时长
         self.total_frames = int(self.video_seconds * fps)  # 视频总帧数
+        self.fg = fg
+        self.bg = bg
 
         # 视频参数
         self.fps = fps
         self.crf = crf
+        self.preset = preset
         self.bitrate = bitrate
         self.encoder = encoder
         self.width = width
         self.height = height
 
         # 预分配内存
+        print((self.height, self.width))
         self.buffer_template = np.zeros((self.height, self.width), dtype=np.uint8)  # 背景模板
+        self.buffer_template.fill(self.bg)
         self.frame_buffer = self.buffer_template.copy()  # 用于写入的帧缓冲区
 
         # 初始化字体
@@ -110,7 +116,7 @@ class FastTimerVideoGenerator:
         max_descent = 0
 
         for char in text:
-            self.face.load_char(char, getattr(freetype, "FT_LOAD_RENDER") | getattr(freetype, "FT_LOAD_TARGET_MONO"))
+            self.face.load_char(char, getattr(freetype, "FT_LOAD_RENDER"))
             glyph = self.face.glyph
             width += glyph.advance.x >> 6
 
@@ -130,9 +136,8 @@ class FastTimerVideoGenerator:
         bbox = self.calc_text_bbox_for_size(self.format_tmp)
         return bbox[2], bbox[3]
 
-    @staticmethod
-    def process_bitmap(bitmap):
-        """处理位图数据，不使用Numba"""
+    def process_bitmap(self, bitmap):
+        """处理字符灰度位图数据"""
         rows = bitmap.rows
         width = bitmap.width
         pitch = bitmap.pitch
@@ -144,21 +149,21 @@ class FastTimerVideoGenerator:
         # 创建输出数组
         output = np.zeros((rows, width), dtype=np.uint8)
 
-        # 处理位图数据
+        # 处理位图数据（灰度模式）
         for i in range(rows):
             row_offset = i * pitch
             for j in range(width):
-                byte_idx = j // 8
-                bit_idx = 7 - (j % 8)  # freetype使用MSB
-                if byte_idx < len(buffer) and (buffer[row_offset + byte_idx] >> bit_idx) & 1:
-                    output[i, j] = 255
+                # 直接读取灰度值（0~255）
+                gray_value = buffer[row_offset + j]
+                # 根据背景色和前景色进行线性映射
+                output[i, j] = int(self.bg + (self.fg - self.bg) * (gray_value / 255))
 
         return output
 
     def get_char_bitmap(self, char):
         """获取字符位图（带缓存）"""
         if char not in self.char_cache:
-            self.face.load_char(char, getattr(freetype, "FT_LOAD_RENDER") | getattr(freetype, "FT_LOAD_TARGET_MONO"))
+            self.face.load_char(char, getattr(freetype, "FT_LOAD_RENDER"))
             glyph = self.face.glyph
             bitmap = glyph.bitmap
 
@@ -215,11 +220,8 @@ class FastTimerVideoGenerator:
         # 提取字符位图的有效部分
         char_region = char_bitmap[by1:by2, bx1:bx2]
 
-        # 创建一个掩码，标记需要绘制的像素（非零值）
-        mask = char_region > 0
-
         # 将字符位图的像素值复制到帧缓冲区的目标区域
-        frame_buffer[y_start:y_end, x_start:x_end][mask] = char_region[mask]
+        frame_buffer[y_start:y_end, x_start:x_end] = char_region
 
     def format_time(self, total_seconds: float):
         """以指定的格式格式化时间"""
@@ -287,6 +289,7 @@ class FastTimerVideoGenerator:
             '-pix_fmt', 'gray',  # 使用灰度格式
             '-r', str(self.fps),
             '-i', '-',  # 从标准输入读取
+            *(['-preset', self.preset, ] if self.preset is not None else []),
             '-c:v', self.encoder,
             '-b:v', str(self.bitrate) + 'k',
             '-crf', str(self.crf),
@@ -362,7 +365,7 @@ class FastTimerVideoGenerator:
                 self.render_text_to_buffer(time_str)
 
                 # 写入帧
-                out.write(self.frame_buffer)
+                out.write(cv2.cvtColor(self.frame_buffer, cv2.COLOR_GRAY2BGR))  # 需要BGR格式
 
             out.release()
             print(f"视频已保存到: {self.output_path}")
@@ -397,14 +400,16 @@ def main():
 
     # 计时器相关
     group = parser.add_argument_group("计时器设置")
-    group.add_argument('-off', '--offset', type=int, default=0,
+    group.add_argument('-off', '--offset', type=float, default=0,
                        help='计时器起始偏移 (秒) (默认: 0)')
-    group.add_argument('-d', '--duration', type=int, default=80 * 60 * 60,
+    group.add_argument('-d', '--duration', type=float, default=80 * 60 * 60,
                        help='计时器时长 (秒) (默认: 80小时)')
-    group.add_argument('-a', "--acceleration", type=int, default=120,
+    group.add_argument('-a', "--acceleration", type=float, default=120,
                        help='加速倍数 (默认: 120)')
     group.add_argument('-f', "--format", type=str, default="hms",
                        help='支持hms(00:00:00), hms.ms(00:00:00.00), ms(00:00), ms.ms(00:00.00)')
+    group.add_argument('-fg', "--font_color", type=int, default=255, )
+    group.add_argument('-bg', "--background_color", type=int, default=0, )
 
     # 视频相关
     group = parser.add_argument_group("视频设置")
@@ -414,6 +419,8 @@ def main():
                        help='编码器 (默认: 自动根据显卡决定) (N卡用: hevc_nvenc) (A卡用：hevc_amf) (Intel用: hevc_qsv)')
     group.add_argument('-crf', type=int, default=18,
                        help='编码器使用的质量值(越低质量越好) (默认: 18)')
+    group.add_argument('-preset', type=str, default=None,
+                       help='编码器使用的预设 (N卡: p1-p7)')
     group.add_argument('-b', "--bitrate", type=int, default=2000,
                        help='编码器使用的码率 (kbps) (默认: 2000)')
     group.add_argument('--width', type=int, default=1920,
@@ -424,10 +431,9 @@ def main():
     # 杂项
     group = parser.add_argument_group("其他")
     group.add_argument('--no-ffmpeg', action='store_true',
-                       help='不使用FFmpeg进行视频编码 (使用OpenCV), -crf -enc 将不可用')
+                       help='不使用FFmpeg进行视频编码, 将通过OpenCV使用mp4v进行CPU编码, -crf -enc 将不可用')
     group.add_argument('--no-numpy', action='store_true',
                        help='字符位图绘制不使用Numpy进行加速, 而使用numba加速的逐像素更改')
-
     group.add_argument('--no-numba', action='store_true',
                        help='字符位图绘制使用python原生遍历算法, 性能极低, 非必要不要启用')
 
@@ -458,10 +464,12 @@ def main():
             encoder = "libx265"
 
     # 创建生成器
-    makedirs(split(args.output)[0])
+    if not Path(args.output).parent.exists():
+        print(f"错误: 输出目录 '{args.output}' 不存在")
+        sys.exit(1)
     generator = FastTimerVideoGenerator(args.font_path, args.output,
-                                        args.offset, args.duration, args.acceleration, args.format,
-                                        args.fps, encoder, args.crf, args.bitrate, args.width, args.height,
+                                        args.offset, args.duration, args.acceleration, args.format, args.font_color, args.background_color,
+                                        args.fps, encoder, args.crf, args.preset, args.bitrate, args.width, args.height,
                                         not args.no_numpy, args.no_numba)
 
     # 生成视频
