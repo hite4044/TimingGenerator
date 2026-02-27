@@ -1,3 +1,4 @@
+freetype-py==2.5.1
 opencv-python==4.13.0.92
 numba==0.64.0
 numpy==2.2.6

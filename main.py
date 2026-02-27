@@ -8,6 +8,7 @@ import numba
 import numpy as np
 from tqdm import tqdm
 
+from ffmpeg_check import check_ffmpeg
 from sys_info import get_gpu_info
 
 
@@ -53,7 +54,6 @@ class FastTimerVideoGenerator:
         self.height = height
 
         # 预分配内存
-        print((self.height, self.width))
         self.buffer_template = np.zeros((self.height, self.width), dtype=np.uint8)  # 背景模板
         self.buffer_template.fill(self.bg)
         self.frame_buffer = self.buffer_template.copy()  # 用于写入的帧缓冲区
@@ -78,6 +78,7 @@ class FastTimerVideoGenerator:
             else:  # Numba加速
                 self.text_render_func = self.render_char_to_buffer
 
+        self.ffmpeg_path: str = 'ffmpeg'
         self.pre_render_chars()
 
     def init_font(self):
@@ -281,7 +282,7 @@ class FastTimerVideoGenerator:
         """使用FFmpeg管道生成视频（更高效）"""
         # 计算FFmpeg命令
         ffmpeg_cmd = [
-            'ffmpeg',
+            f'{self.ffmpeg_path}',
             '-y',  # 覆盖输出文件
             '-f', 'rawvideo',
             '-vcodec', 'rawvideo',
@@ -474,6 +475,8 @@ def main():
 
     # 生成视频
     try:
+        if not args.no_ffmpeg:
+            generator.ffmpeg_path = check_ffmpeg()
         generator.generate(use_ffmpeg=not args.no_ffmpeg)
     except KeyboardInterrupt:
         print("\n用户中断")
