@@ -1,8 +1,14 @@
+import os, sys
+from os import makedirs
+
+t = os.path.dirname(os.path.abspath(__file__))
+os.chdir(t)  # 进入当前目录
+sys.path.append(t)  # 添加模块导入路径
+
 import subprocess
 import sys
 from pathlib import Path
 
-import cv2
 import freetype
 import numba
 import numpy as np
@@ -86,7 +92,6 @@ class FastTimerVideoGenerator:
         self.face = freetype.Face(str(self.font_path))
 
         # 动态计算字体大小以适应屏幕
-        test_size = 100
         max_size = 300
         min_size = 20
 
@@ -336,6 +341,7 @@ class FastTimerVideoGenerator:
 
     def generate_video_opencv(self):
         """使用OpenCV生成视频（备用方案）"""
+        import cv2
         # 创建视频写入器
         fourcc = getattr(cv2, "VideoWriter_fourcc")(*'mp4v')
         out = cv2.VideoWriter(
@@ -395,7 +401,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='生成正计时视频')
-    parser.add_argument('font_path', help='字体文件路径, 推荐为等宽字体', default='MapleMono-NF-CN-Bold.ttf')
+    parser.add_argument('-font', '--font-path', default='MapleMono-NF-CN-Bold.ttf',
+                        help='字体文件路径, 推荐为等宽字体')
     parser.add_argument('-o', '--output', default='output\\timer_output.mkv',
                         help='输出视频路径')
 
@@ -468,8 +475,8 @@ def main():
 
     # 创建生成器
     if not Path(args.output).parent.exists():
-        print(f"错误: 输出目录 '{args.output}' 不存在")
-        sys.exit(1)
+        makedirs(str(Path(args.output).parent))
+
     generator = FastTimerVideoGenerator(args.font_path, args.output,
                                         args.offset, args.duration, args.acceleration, args.format, args.font_color, args.background_color,
                                         args.fps, encoder, args.crf, args.preset, args.bitrate, args.width, args.height,
