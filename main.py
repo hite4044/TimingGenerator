@@ -351,7 +351,11 @@ class FastTimerVideoGenerator:
 
     def generate_video_opencv(self):
         """使用OpenCV生成视频（备用方案）"""
-        import cv2
+        try:
+            import cv2
+        except ImportError:
+            print("OpenCV未安装, 退出程序")
+            raise
         # 创建视频写入器
         fourcc = getattr(cv2, "VideoWriter_fourcc")(*'mp4v')
         out = cv2.VideoWriter(
