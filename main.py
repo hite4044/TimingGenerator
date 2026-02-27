@@ -1,4 +1,5 @@
-import os, sys
+import os
+import sys
 from os import makedirs
 
 t = os.path.dirname(os.path.abspath(__file__))
@@ -10,16 +11,22 @@ import sys
 from pathlib import Path
 
 import freetype
+
 try:
     import numba
 except ImportError:
     print("Numba加速不可用")
+
+
     class FakeNumba:
         @staticmethod
         def njit(*args, **kwargs):
             def wrapper(func):
                 return func
+
             return wrapper
+
+
     numba = FakeNumba()
 import numpy as np
 from tqdm import tqdm
@@ -40,10 +47,10 @@ class FastTimerVideoGenerator:
                  start_offset: float = 0, total_seconds: float = 80 * 60 * 60, acceleration: float = 120,
                  fmt: str = "hms", fg: int = 255, bg: int = 0,
 
-                 fps: int = 30, encoder="libx265", crf: int = 18, preset: str = None, bitrate: int = 2000,
+                 fps: int = 30, encoder="libx265", crf: int = 32, preset: str = None, bitrate: str | None = None,
                  width: int = 1920, height: int = 1080,
 
-                 use_numpy: bool = True, no_numba: bool = False):
+                 use_numpy: bool = True, no_numba: bool = False, no_lossless: bool = False, ):
         """
         初始化视频生成器
         """
@@ -68,6 +75,7 @@ class FastTimerVideoGenerator:
         self.encoder = encoder
         self.width = width
         self.height = height
+        self.no_lossless = no_lossless
 
         # 预分配内存
         self.buffer_template = np.zeros((self.height, self.width), dtype=np.uint8)  # 背景模板
@@ -305,20 +313,23 @@ class FastTimerVideoGenerator:
             '-pix_fmt', 'gray',  # 使用灰度格式
             '-r', str(self.fps),
             '-i', '-',  # 从标准输入读取
-            *(['-preset', self.preset, ] if self.preset is not None else []),
             '-c:v', self.encoder,
-            '-b:v', str(self.bitrate) + 'k',
-            '-crf', str(self.crf),
-            '-pix_fmt', 'yuv420p',
-            str(self.output_path)
         ]
+        if self.preset is not None:
+            ffmpeg_cmd.extend(['-preset', self.preset])
+        if not self.no_lossless:
+            ffmpeg_cmd.extend(['-tune', 'lossless'])
+        ffmpeg_cmd.extend(['-b:v', self.bitrate])
+        ffmpeg_cmd.extend(['-crf', str(self.crf)])
+        ffmpeg_cmd.extend(['-pix_fmt', 'yuv420p',])
+        ffmpeg_cmd.extend([str(self.output_path)])
 
         print(f"生成视频: {self.total_frames}帧 ({self.video_seconds:.1f}秒)")
         print(f"实际时间: {self.total_seconds}秒, 加速: {self.acceleration}倍")
 
         # 启动FFmpeg进程
         proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, bufsize=1024 * 1024,
-                                stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                                stderr=subprocess.STDOUT, stdout=subprocess.DEVNULL)
 
         last_text: str = ""
         try:
@@ -441,12 +452,12 @@ def main():
                        help='帧率 (默认: 30)')
     group.add_argument('-enc', "--encoder", type=str, default="%AUTO%",
                        help='编码器 (默认: 自动根据显卡决定) (N卡用: hevc_nvenc) (A卡用：hevc_amf) (Intel用: hevc_qsv)')
-    group.add_argument('-crf', type=int, default=18,
-                       help='编码器使用的质量值 (越低质量越好) (默认: 18)')
+    group.add_argument('-crf', type=int, default=32,
+                       help='编码器使用的质量值 (越低质量越好) (默认: 22)')
     group.add_argument('-preset', type=str, default=None,
                        help='编码器使用的预设 (N卡: p1-p7)')
-    group.add_argument('-b', "--bitrate", type=int, default=2000,
-                       help='编码器使用的码率 (kbps) (默认: 2000)')
+    group.add_argument('-b', "--bitrate", type=str, default=None,
+                       help='编码器使用的码率 (kbps) (例: 1000k)')
     group.add_argument('--width', type=int, default=1920,
                        help='视频宽度 (默认: 1920)')
     group.add_argument('--height', type=int, default=1080,
@@ -454,6 +465,8 @@ def main():
 
     # 杂项
     group = parser.add_argument_group("其他")
+    group.add_argument('--no-lossless', action='store_true',
+                       help="不使用无损编码")
     group.add_argument('--no-ffmpeg', action='store_true',
                        help='不使用FFmpeg进行视频编码, 将通过OpenCV使用mp4v进行CPU编码, -crf -enc 将不可用')
     group.add_argument('--no-numpy', action='store_true',
@@ -492,7 +505,8 @@ def main():
         makedirs(str(Path(args.output).parent))
 
     generator = FastTimerVideoGenerator(args.font_path, args.output,
-                                        args.offset, args.duration, args.acceleration, args.format, args.font_color, args.background_color,
+                                        args.offset, args.duration, args.acceleration, args.format, args.font_color,
+                                        args.background_color,
                                         args.fps, encoder, args.crf, args.preset, args.bitrate, args.width, args.height,
                                         not args.no_numpy, args.no_numba)
 
