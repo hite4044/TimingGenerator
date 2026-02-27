@@ -395,7 +395,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description='生成正计时视频')
-    parser.add_argument('font_path', help='字体文件路径', default='MapleMono-NF-CN-Bold.ttf')
+    parser.add_argument('font_path', help='字体文件路径, 推荐为等宽字体', default='MapleMono-NF-CN-Bold.ttf')
     parser.add_argument('-o', '--output', default='output\\timer_output.mkv',
                         help='输出视频路径')
 
@@ -409,8 +409,10 @@ def main():
                        help='加速倍数 (默认: 120)')
     group.add_argument('-f', "--format", type=str, default="hms",
                        help='支持hms(00:00:00), hms.ms(00:00:00.00), ms(00:00), ms.ms(00:00.00)')
-    group.add_argument('-fg', "--font_color", type=int, default=255, )
-    group.add_argument('-bg', "--background_color", type=int, default=0, )
+    group.add_argument('-fg', "--font_color", type=int, default=255,
+                       help='字体颜色 (默认: 255)')
+    group.add_argument('-bg', "--background_color", type=int, default=0,
+                       help='背景颜色 (默认: 0)')
 
     # 视频相关
     group = parser.add_argument_group("视频设置")
