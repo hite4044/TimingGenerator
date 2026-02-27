@@ -320,7 +320,6 @@ class FastTimerVideoGenerator:
             ffmpeg_cmd.extend(['-tune', 'lossless'])
         if self.bitrate is not None:
             ffmpeg_cmd.extend(['-b:v', str(self.bitrate)])
-        ffmpeg_cmd.extend(['-crf', str(self.crf)])
         ffmpeg_cmd.extend(['-pix_fmt', 'yuv420p',])
         ffmpeg_cmd.extend([str(self.output_path)])
 
