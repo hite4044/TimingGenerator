@@ -47,7 +47,7 @@ class FastTimerVideoGenerator:
                  start_offset: float = 0, total_seconds: float = 80 * 60 * 60, acceleration: float = 120,
                  fmt: str = "hms", fg: int = 255, bg: int = 0,
 
-                 fps: int = 30, encoder="libx265", crf: int = 32, preset: str = None, bitrate: str | None = None,
+                 fps: int = 30, encoder="libx265", preset: str = None, bitrate: str | None = None,
                  width: int = 1920, height: int = 1080,
 
                  use_numpy: bool = True, no_numba: bool = False, no_lossless: bool = False, ):
@@ -69,7 +69,6 @@ class FastTimerVideoGenerator:
 
         # 视频参数
         self.fps = fps
-        self.crf = crf
         self.preset = preset
         self.bitrate = bitrate
         self.encoder = encoder
@@ -316,10 +315,11 @@ class FastTimerVideoGenerator:
             '-c:v', self.encoder,
         ]
         if self.preset is not None:
-            ffmpeg_cmd.extend(['-preset', self.preset])
+            ffmpeg_cmd.extend(['-preset', str(self.preset)])
         if not self.no_lossless:
             ffmpeg_cmd.extend(['-tune', 'lossless'])
-        ffmpeg_cmd.extend(['-b:v', self.bitrate])
+        if self.bitrate is not None:
+            ffmpeg_cmd.extend(['-b:v', str(self.bitrate)])
         ffmpeg_cmd.extend(['-crf', str(self.crf)])
         ffmpeg_cmd.extend(['-pix_fmt', 'yuv420p',])
         ffmpeg_cmd.extend([str(self.output_path)])
@@ -329,7 +329,7 @@ class FastTimerVideoGenerator:
 
         # 启动FFmpeg进程
         proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, bufsize=1024 * 1024,
-                                stderr=subprocess.STDOUT, stdout=subprocess.DEVNULL)
+                                stderr=subprocess.STDOUT, stdout=subprocess.PIPE)
 
         last_text: str = ""
         try:
@@ -351,12 +351,15 @@ class FastTimerVideoGenerator:
                 proc.stdin.write(self.frame_buffer.data)
 
             proc.stdin.close()
+            proc.stdout.read()  # 读取所有输出
             proc.wait()
 
             print(f"视频已保存到: {self.output_path}")
 
         except Exception as e:
             print(f"生成视频时出错: {e}")
+            print(f"FFmpeg输出: ")
+            print(proc.stdout.read().decode('utf-8'))
             proc.terminate()
             raise
 
@@ -452,8 +455,6 @@ def main():
                        help='帧率 (默认: 30)')
     group.add_argument('-enc', "--encoder", type=str, default="%AUTO%",
                        help='编码器 (默认: 自动根据显卡决定) (N卡用: hevc_nvenc) (A卡用：hevc_amf) (Intel用: hevc_qsv)')
-    group.add_argument('-crf', type=int, default=32,
-                       help='编码器使用的质量值 (越低质量越好) (默认: 22)')
     group.add_argument('-preset', type=str, default=None,
                        help='编码器使用的预设 (N卡: p1-p7)')
     group.add_argument('-b', "--bitrate", type=str, default=None,
@@ -507,7 +508,7 @@ def main():
     generator = FastTimerVideoGenerator(args.font_path, args.output,
                                         args.offset, args.duration, args.acceleration, args.format, args.font_color,
                                         args.background_color,
-                                        args.fps, encoder, args.crf, args.preset, args.bitrate, args.width, args.height,
+                                        args.fps, encoder, args.preset, args.bitrate, args.width, args.height,
                                         not args.no_numpy, args.no_numba)
 
     # 生成视频
@@ -518,7 +519,7 @@ def main():
     except KeyboardInterrupt:
         print("\n用户中断")
         sys.exit(1)
-    except Exception as e:
+    except EncodingWarning as e:
         print(f"错误: {e}")
         sys.exit(1)
 
