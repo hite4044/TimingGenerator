@@ -10,7 +10,17 @@ import sys
 from pathlib import Path
 
 import freetype
-import numba
+try:
+    import numba
+except ImportError:
+    print("Numba加速不可用")
+    class FakeNumba:
+        @staticmethod
+        def njit(*args, **kwargs):
+            def wrapper(func):
+                return func
+            return wrapper
+    numba = FakeNumba()
 import numpy as np
 from tqdm import tqdm
 
