@@ -408,7 +408,7 @@ def main():
     group.add_argument('-a', "--acceleration", type=float, default=120,
                        help='加速倍数 (默认: 120)')
     group.add_argument('-f', "--format", type=str, default="hms",
-                       help='支持hms(00:00:00), hms.ms(00:00:00.00), ms(00:00), ms.ms(00:00.00)')
+                       help='支持 hms(00:00:00), hms.ms(00:00:00.00), ms(00:00), ms.ms(00:00.00)')
     group.add_argument('-fg', "--font_color", type=int, default=255,
                        help='字体颜色 (默认: 255)')
     group.add_argument('-bg', "--background_color", type=int, default=0,
@@ -421,7 +421,7 @@ def main():
     group.add_argument('-enc', "--encoder", type=str, default="%AUTO%",
                        help='编码器 (默认: 自动根据显卡决定) (N卡用: hevc_nvenc) (A卡用：hevc_amf) (Intel用: hevc_qsv)')
     group.add_argument('-crf', type=int, default=18,
-                       help='编码器使用的质量值(越低质量越好) (默认: 18)')
+                       help='编码器使用的质量值 (越低质量越好) (默认: 18)')
     group.add_argument('-preset', type=str, default=None,
                        help='编码器使用的预设 (N卡: p1-p7)')
     group.add_argument('-b', "--bitrate", type=int, default=2000,
